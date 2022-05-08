@@ -31,9 +31,7 @@ import (
 	genutilcli "github.com/cosmos/cosmos-sdk/x/genutil/client/cli"
 
 	terraapp "github.com/terra-money/core/app"
-	terralegacy "github.com/terra-money/core/app/legacy"
 	"github.com/terra-money/core/app/params"
-	authcustomcli "github.com/terra-money/core/custom/auth/client/cli"
 	core "github.com/terra-money/core/types"
 	wasmconfig "github.com/terra-money/core/x/wasm/config"
 )
@@ -45,7 +43,6 @@ func NewRootCmd() (*cobra.Command, params.EncodingConfig) {
 
 	sdkConfig := sdk.GetConfig()
 	sdkConfig.SetCoinType(core.CoinType)
-	sdkConfig.SetFullFundraiserPath(core.FullFundraiserPath)
 	sdkConfig.SetBech32PrefixForAccount(core.Bech32PrefixAccAddr, core.Bech32PrefixAccPub)
 	sdkConfig.SetBech32PrefixForValidator(core.Bech32PrefixValAddr, core.Bech32PrefixValPub)
 	sdkConfig.SetBech32PrefixForConsensusNode(core.Bech32PrefixConsAddr, core.Bech32PrefixConsPub)
@@ -102,7 +99,6 @@ func initRootCmd(rootCmd *cobra.Command, encodingConfig params.EncodingConfig) {
 	rootCmd.AddCommand(
 		genutilcli.InitCmd(terraapp.ModuleBasics, terraapp.DefaultNodeHome),
 		genutilcli.CollectGenTxsCmd(banktypes.GenesisBalancesIterator{}, terraapp.DefaultNodeHome),
-		terralegacy.MigrateGenesisCmd(),
 		genutilcli.GenTxCmd(terraapp.ModuleBasics, encodingConfig.TxConfig, banktypes.GenesisBalancesIterator{}, terraapp.DefaultNodeHome),
 		genutilcli.ValidateGenesisCmd(terraapp.ModuleBasics),
 		AddGenesisAccountCmd(terraapp.DefaultNodeHome),
@@ -146,7 +142,6 @@ func queryCommand() *cobra.Command {
 		rpc.BlockCommand(),
 		authcmd.QueryTxsByEventsCmd(),
 		authcmd.QueryTxCmd(),
-		authcustomcli.GetTxFeesEstimateCommand(),
 	)
 
 	terraapp.ModuleBasics.AddQueryCommands(cmd)
@@ -193,7 +188,6 @@ func (a appCreator) newApp(logger log.Logger, db dbm.DB, traceStore io.Writer, a
 
 	if cast.ToBool(appOpts.Get(server.FlagInterBlockCache)) {
 		cache = store.NewCommitKVStoreCacheManager()
-		cache.SetCacheSize(cast.ToUint(appOpts.Get(server.FlagInterBlockCacheSize)))
 	}
 
 	skipUpgradeHeights := make(map[int64]bool)
@@ -239,7 +233,6 @@ func (a appCreator) newApp(logger log.Logger, db dbm.DB, traceStore io.Writer, a
 		baseapp.SetSnapshotStore(snapshotStore),
 		baseapp.SetSnapshotInterval(cast.ToUint64(appOpts.Get(server.FlagStateSyncSnapshotInterval))),
 		baseapp.SetSnapshotKeepRecent(cast.ToUint32(appOpts.Get(server.FlagStateSyncSnapshotKeepRecent))),
-		baseapp.SetIAVLCacheSize(int(cast.ToUint64(appOpts.Get(server.FlagIAVLCacheSize)))),
 	)
 }
 

@@ -1,10 +1,18 @@
 package types
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/terra-money/core/app/params"
 )
+
+func TestNewGenesisState(t *testing.T) {
+	genState := DefaultGenesisState()
+	require.Equal(t, genState, NewGenesisState(DefaultParams(), 0, 0, []Code{}, []Contract{}))
+}
 
 func TestGenesisValidation(t *testing.T) {
 	genState := DefaultGenesisState()
@@ -36,4 +44,13 @@ func TestGenesisValidation(t *testing.T) {
 
 	genState.LastInstanceID = 1
 	require.Error(t, ValidateGenesis(genState))
+}
+
+func TestGetGenesisStateFromAppState(t *testing.T) {
+	cdc := params.MakeEncodingConfig().Marshaler
+	appState := make(map[string]json.RawMessage)
+
+	defaultGenesisState := DefaultGenesisState()
+	appState[ModuleName] = cdc.MustMarshalJSON(defaultGenesisState)
+	require.Equal(t, *defaultGenesisState, *GetGenesisStateFromAppState(cdc, appState))
 }

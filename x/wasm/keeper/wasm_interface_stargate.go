@@ -2,7 +2,6 @@ package keeper
 
 import (
 	"fmt"
-	"strings"
 
 	abci "github.com/tendermint/tendermint/abci/types"
 
@@ -12,6 +11,8 @@ import (
 
 	wasmvmtypes "github.com/CosmWasm/wasmvm/types"
 
+	legacytreasury "github.com/terra-money/core/x/wasm/legacyqueriers/treasury"
+	"github.com/terra-money/core/x/wasm/stargatelayer"
 	"github.com/terra-money/core/x/wasm/types"
 )
 
@@ -51,28 +52,29 @@ func (parser StargateWasmMsgParser) Parse(wasmMsg wasmvmtypes.CosmosMsg) (sdk.Ms
 
 // StargateWasmQuerier - wasm query interface for wasm contract
 type StargateWasmQuerier struct {
-	keeper Keeper
+	queryRouter types.GRPCQueryRouter
 }
 
 // NewStargateWasmQuerier returns stargate wasm querier
-func NewStargateWasmQuerier(keeper Keeper) StargateWasmQuerier {
-	return StargateWasmQuerier{keeper}
-}
-
-var queryBlackList = []string{
-	"/cosmos.tx",
-	"/cosmos.base.tendermint",
+func NewStargateWasmQuerier(queryRouter types.GRPCQueryRouter) StargateWasmQuerier {
+	return StargateWasmQuerier{queryRouter}
 }
 
 // Query - implement query function
 func (querier StargateWasmQuerier) Query(ctx sdk.Context, request wasmvmtypes.QueryRequest) ([]byte, error) {
-	for _, b := range queryBlackList {
-		if strings.Contains(request.Stargate.Path, b) {
-			return nil, wasmvmtypes.UnsupportedRequest{Kind: fmt.Sprintf("'%s' path is not allowed from the contract", request.Stargate.Path)}
-		}
+
+	// check the query path is whitelisted or not
+	binding, whitelisted := stargatelayer.StargateLayerBindings.Load(request.Stargate.Path)
+	if !whitelisted {
+		return nil, wasmvmtypes.UnsupportedRequest{Kind: fmt.Sprintf("'%s' path is not allowed from the contract", request.Stargate.Path)}
 	}
 
-	route := querier.keeper.queryRouter.Route(request.Stargate.Path)
+	// handle legacy queriers
+	if bz, err := legacytreasury.QueryLegacyTreasury(request.Stargate.Path); bz != nil || err != nil {
+		return bz, err
+	}
+
+	route := querier.queryRouter.Route(request.Stargate.Path)
 	if route == nil {
 		return nil, wasmvmtypes.UnsupportedRequest{Kind: fmt.Sprintf("No route to query '%s'", request.Stargate.Path)}
 	}
@@ -86,5 +88,11 @@ func (querier StargateWasmQuerier) Query(ctx sdk.Context, request wasmvmtypes.Qu
 		return nil, err
 	}
 
-	return res.Value, nil
+	// normalize response to ensure backward compatibility
+	bz, err := stargatelayer.NormalizeResponse(binding, res.Value)
+	if err != nil {
+		return nil, err
+	}
+
+	return bz, nil
 }

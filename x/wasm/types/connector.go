@@ -5,6 +5,8 @@ import (
 
 	abci "github.com/tendermint/tendermint/abci/types"
 
+	ibcclienttypes "github.com/cosmos/ibc-go/v3/modules/core/02-client/types"
+
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	sdkerrors "github.com/cosmos/cosmos-sdk/types/errors"
 
@@ -12,7 +14,7 @@ import (
 )
 
 // DefaultFeatures - Cosmwasm feature
-const DefaultFeatures = "stargate,staking,terra"
+const DefaultFeatures = "stargate,staking,terra,iterator"
 
 // ParseEvents converts wasm EventAttributes and Events into an sdk.Events
 func ParseEvents(
@@ -27,26 +29,22 @@ func ParseEvents(
 	var sdkEvents sdk.Events
 
 	if len(attributes) != 0 {
-		sdkEvent, err := buildEvent(EventTypeWasmPrefix, contractAddr, attributes)
-		if err != nil {
-			return nil, err
+		sdkEvent := buildEvent(EventTypeWasmPrefix, contractAddr, attributes)
+		if sdkEvent != nil {
+			sdkEvents = sdkEvents.AppendEvent(*sdkEvent)
+
+			// Deprecated: from_contract
+			sdkEvent.Type = EventTypeFromContract
+			sdkEvents = sdkEvents.AppendEvent(*sdkEvent)
 		}
-
-		sdkEvents = sdkEvents.AppendEvent(*sdkEvent)
-
-		// Deprecated: from_contract
-		sdkEvent.Type = EventTypeFromContract
-		sdkEvents = sdkEvents.AppendEvent(*sdkEvent)
 	}
 
 	// append wasm prefix for the events
 	for _, event := range events {
-		sdkEvent, err := buildEvent(fmt.Sprintf("%s-%s", EventTypeWasmPrefix, event.Type), contractAddr, event.Attributes)
-		if err != nil {
-			return nil, err
+		sdkEvent := buildEvent(fmt.Sprintf("%s-%s", EventTypeWasmPrefix, event.Type), contractAddr, event.Attributes)
+		if sdkEvent != nil {
+			sdkEvents = sdkEvents.AppendEvent(*sdkEvent)
 		}
-
-		sdkEvents = sdkEvents.AppendEvent(*sdkEvent)
 	}
 
 	return sdkEvents, nil
@@ -56,9 +54,9 @@ func buildEvent(
 	eventType string,
 	contractAddr sdk.AccAddress,
 	attributes wasmvmtypes.EventAttributes,
-) (*sdk.Event, error) {
+) *sdk.Event {
 	if len(attributes) == 0 {
-		return nil, nil
+		return nil
 	}
 
 	// we always tag with the contract address issuing this event
@@ -72,7 +70,7 @@ func buildEvent(
 	}
 
 	event := sdk.NewEvent(eventType, attrs...)
-	return &event, nil
+	return &event
 }
 
 // ParseToCoin converts wasm coin to sdk.Coin
@@ -122,18 +120,18 @@ func EncodeSdkCoins(coins sdk.Coins) wasmvmtypes.Coins {
 
 // EncodeSdkEvents - encode sdk events to wasm events
 // Deprecated `from_contract` will be excluded from the events
-func EncodeSdkEvents(events []sdk.Event) []wasmvmtypes.Event {
-	res := make([]wasmvmtypes.Event, len(events))
-	for i, ev := range events {
+func EncodeSdkEvents(events []sdk.Event) wasmvmtypes.Events {
+	var res wasmvmtypes.Events
+	for _, ev := range events {
 		// Deprecated: from_contract
 		if ev.Type == EventTypeFromContract {
 			continue
 		}
 
-		res[i] = wasmvmtypes.Event{
+		res = append(res, wasmvmtypes.Event{
 			Type:       ev.Type,
 			Attributes: encodeSdkAttributes(ev.Attributes),
-		}
+		})
 	}
 	return res
 }
@@ -147,4 +145,18 @@ func encodeSdkAttributes(attrs []abci.EventAttribute) []wasmvmtypes.EventAttribu
 		}
 	}
 	return res
+}
+
+// ConvertWasmIBCTimeoutHeightToCosmosHeight convert timeout height to ibc unit
+func ConvertWasmIBCTimeoutHeightToCosmosHeight(ibcTimeoutBlock *wasmvmtypes.IBCTimeoutBlock) ibcclienttypes.Height {
+	if ibcTimeoutBlock == nil {
+		return ibcclienttypes.NewHeight(0, 0)
+	}
+	return ibcclienttypes.NewHeight(ibcTimeoutBlock.Revision, ibcTimeoutBlock.Height)
+}
+
+// Messenger coordinates message sending
+type Messenger interface {
+	HandleIBCSendPacket(ctx sdk.Context, contractIBCPortID string, msg wasmvmtypes.CosmosMsg) (sdk.Events, error)
+	HandleSdkMessage(ctx sdk.Context, contractAddr sdk.AccAddress, msg sdk.Msg) (*sdk.Result, error)
 }

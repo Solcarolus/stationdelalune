@@ -25,17 +25,16 @@ type Keeper struct {
 	cdc        codec.BinaryCodec
 	paramSpace paramstypes.Subspace
 
-	accountKeeper  types.AccountKeeper
-	bankKeeper     types.BankKeeper
-	treasuryKeeper types.TreasuryKeeper
-
-	serviceRouter types.MsgServiceRouter
-	queryRouter   types.GRPCQueryRouter
+	accountKeeper    types.AccountKeeper
+	bankKeeper       types.BankKeeper
+	portKeeper       types.PortKeeper
+	capabilityKeeper types.CapabilityKeeper
 
 	wasmVM types.WasmerEngine
 
 	querier   types.Querier
 	msgParser types.MsgParser
+	messenger types.Messenger
 
 	// WASM config values
 	wasmConfig *config.Config
@@ -48,9 +47,10 @@ func NewKeeper(
 	paramspace paramstypes.Subspace,
 	accountKeeper types.AccountKeeper,
 	bankKeeper types.BankKeeper,
-	treasuryKeeper types.TreasuryKeeper,
+	channelKeeper types.ChannelKeeper,
+	portKeeper types.PortKeeper,
+	capabilityKeeper types.CapabilityKeeper,
 	serviceRouter types.MsgServiceRouter,
-	queryRouter types.GRPCQueryRouter,
 	supportedFeatures string,
 	homePath string,
 	wasmConfig *config.Config) Keeper {
@@ -78,18 +78,18 @@ func NewKeeper(
 	}
 
 	return Keeper{
-		storeKey:       storeKey,
-		cdc:            cdc,
-		paramSpace:     paramspace,
-		wasmVM:         vm,
-		accountKeeper:  accountKeeper,
-		bankKeeper:     bankKeeper,
-		treasuryKeeper: treasuryKeeper,
-		serviceRouter:  serviceRouter,
-		queryRouter:    queryRouter,
-		wasmConfig:     wasmConfig,
-		msgParser:      types.NewWasmMsgParser(),
-		querier:        types.NewWasmQuerier(),
+		storeKey:         storeKey,
+		cdc:              cdc,
+		paramSpace:       paramspace,
+		wasmVM:           vm,
+		accountKeeper:    accountKeeper,
+		bankKeeper:       bankKeeper,
+		portKeeper:       portKeeper,
+		capabilityKeeper: capabilityKeeper,
+		wasmConfig:       wasmConfig,
+		msgParser:        types.NewWasmMsgParser(),
+		querier:          types.NewWasmQuerier(),
+		messenger:        NewMessenger(serviceRouter, channelKeeper, capabilityKeeper),
 	}
 }
 
@@ -157,7 +157,7 @@ func (k Keeper) GetContractInfo(ctx sdk.Context, contractAddress sdk.AccAddress)
 	store := ctx.KVStore(k.storeKey)
 	contractBz := store.Get(types.GetContractInfoKey(contractAddress))
 	if contractBz == nil {
-		return types.ContractInfo{}, sdkerrors.Wrapf(types.ErrNotFound, "constractInfo %s", contractAddress.String())
+		return types.ContractInfo{}, sdkerrors.Wrapf(types.ErrNotFound, "contractInfo %s", contractAddress.String())
 	}
 	k.cdc.MustUnmarshal(contractBz, &contractInfo)
 	return contractInfo, nil
@@ -219,6 +219,7 @@ func (k Keeper) GetByteCode(ctx sdk.Context, codeID uint64) ([]byte, error) {
 func (k *Keeper) RegisterMsgParsers(
 	parsers map[string]types.WasmMsgParserInterface,
 	stargateWasmMsgParser types.StargateWasmMsgParserInterface,
+	ibcWasmMsgParser types.IBCWasmMsgParserInterface,
 ) {
 	for route, parser := range parsers {
 		k.msgParser.Parsers[route] = parser
@@ -227,12 +228,17 @@ func (k *Keeper) RegisterMsgParsers(
 	if stargateWasmMsgParser != nil {
 		k.msgParser.StargateParser = stargateWasmMsgParser
 	}
+
+	if ibcWasmMsgParser != nil {
+		k.msgParser.IBCParser = ibcWasmMsgParser
+	}
 }
 
 // RegisterQueriers register module queriers
 func (k *Keeper) RegisterQueriers(
 	queriers map[string]types.WasmQuerierInterface,
 	stargateWasmQuerier types.StargateWasmQuerierInterface,
+	ibcWasmQuerier types.IBCWasmQuerierInterface,
 ) {
 	for route, querier := range queriers {
 		k.querier.Queriers[route] = querier
@@ -240,5 +246,9 @@ func (k *Keeper) RegisterQueriers(
 
 	if stargateWasmQuerier != nil {
 		k.querier.StargateQuerier = stargateWasmQuerier
+	}
+
+	if ibcWasmQuerier != nil {
+		k.querier.IBCQuerier = ibcWasmQuerier
 	}
 }

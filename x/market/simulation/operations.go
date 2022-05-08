@@ -21,6 +21,7 @@ import (
 
 // Simulation operation weights constants
 const (
+	// nolint:gosec
 	OpWeightMsgSwap = "op_weight_msg_swap"
 )
 

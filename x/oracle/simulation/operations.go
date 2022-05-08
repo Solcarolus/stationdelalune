@@ -19,6 +19,7 @@ import (
 	"github.com/terra-money/core/x/oracle/types"
 )
 
+// nolint
 // Simulation operation weights constants
 const (
 	OpWeightMsgAggregateExchangeRatePrevote = "op_weight_msg_exchange_rate_aggregate_prevote"
@@ -29,8 +30,8 @@ const (
 )
 
 var (
-	whitelist                     = []string{core.MicroKRWDenom, core.MicroUSDDenom, core.MicroSDRDenom}
-	voteHashMap map[string]string = make(map[string]string)
+	whitelist   = []string{core.MicroKRWDenom, core.MicroUSDDenom, core.MicroSDRDenom}
+	voteHashMap = make(map[string]string)
 )
 
 // WeightedOperations returns all the operations from the module with their respective weights

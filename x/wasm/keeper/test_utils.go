@@ -16,9 +16,6 @@ import (
 
 	tmproto "github.com/tendermint/tendermint/proto/tendermint/types"
 
-	"github.com/cosmos/ibc-go/modules/apps/transfer"
-	ibc "github.com/cosmos/ibc-go/modules/core"
-
 	"github.com/cosmos/cosmos-sdk/baseapp"
 	"github.com/cosmos/cosmos-sdk/codec"
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
@@ -26,6 +23,7 @@ import (
 	simparams "github.com/cosmos/cosmos-sdk/simapp/params"
 	"github.com/cosmos/cosmos-sdk/std"
 	"github.com/cosmos/cosmos-sdk/store"
+	storetypes "github.com/cosmos/cosmos-sdk/store/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/types/module"
 	authkeeper "github.com/cosmos/cosmos-sdk/x/auth/keeper"
@@ -34,12 +32,19 @@ import (
 	bankkeeper "github.com/cosmos/cosmos-sdk/x/bank/keeper"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 	"github.com/cosmos/cosmos-sdk/x/capability"
+	capabilitykeeper "github.com/cosmos/cosmos-sdk/x/capability/keeper"
+	capabilitytypes "github.com/cosmos/cosmos-sdk/x/capability/types"
 	distrkeeper "github.com/cosmos/cosmos-sdk/x/distribution/keeper"
 	distrtypes "github.com/cosmos/cosmos-sdk/x/distribution/types"
 	paramskeeper "github.com/cosmos/cosmos-sdk/x/params/keeper"
 	paramstypes "github.com/cosmos/cosmos-sdk/x/params/types"
 	stakingkeeper "github.com/cosmos/cosmos-sdk/x/staking/keeper"
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
+	upgradekeeper "github.com/cosmos/cosmos-sdk/x/upgrade/keeper"
+	upgradetypes "github.com/cosmos/cosmos-sdk/x/upgrade/types"
+
+	ibchost "github.com/cosmos/ibc-go/v3/modules/core/24-host"
+	ibckeeper "github.com/cosmos/ibc-go/v3/modules/core/keeper"
 
 	customauth "github.com/terra-money/core/custom/auth"
 	custombank "github.com/terra-money/core/custom/bank"
@@ -59,10 +64,9 @@ import (
 	oraclekeeper "github.com/terra-money/core/x/oracle/keeper"
 	oracletypes "github.com/terra-money/core/x/oracle/types"
 	oraclewasm "github.com/terra-money/core/x/oracle/wasm"
-	treasurykeeper "github.com/terra-money/core/x/treasury/keeper"
-	treasurytypes "github.com/terra-money/core/x/treasury/types"
-	treasurywasm "github.com/terra-money/core/x/treasury/wasm"
 	"github.com/terra-money/core/x/wasm/config"
+	"github.com/terra-money/core/x/wasm/keeper/wasmtesting"
+	treasurylegacy "github.com/terra-money/core/x/wasm/legacyqueriers/treasury"
 	"github.com/terra-money/core/x/wasm/types"
 )
 
@@ -77,8 +81,6 @@ var ModuleBasics = module.NewBasicManager(
 	customparams.AppModuleBasic{},
 	oracle.AppModuleBasic{},
 	market.AppModuleBasic{},
-	ibc.AppModuleBasic{},
-	transfer.AppModuleBasic{},
 	capability.AppModuleBasic{},
 )
 
@@ -112,6 +114,7 @@ func MakeEncodingConfig(_ *testing.T) simparams.EncodingConfig {
 
 // Test Account
 var (
+	// nolint:deadcode,unused
 	valPubKeys = simapp.CreateTestPubKeys(5)
 
 	PubKeys = []crypto.PubKey{
@@ -140,13 +143,14 @@ var (
 type TestInput struct {
 	Ctx                sdk.Context
 	Cdc                *codec.LegacyAmino
+	InterfaceRegistry  codectypes.InterfaceRegistry
 	AccKeeper          authkeeper.AccountKeeper
 	BankKeeper         bankkeeper.Keeper
 	StakingKeeper      stakingkeeper.Keeper
 	DistributionKeeper distrkeeper.Keeper
 	OracleKeeper       oraclekeeper.Keeper
 	MarketKeeper       marketkeeper.Keeper
-	TreasuryKeeper     treasurykeeper.Keeper
+	IBCKeeper          ibckeeper.Keeper
 	WasmKeeper         Keeper
 }
 
@@ -163,7 +167,10 @@ func CreateTestInput(t *testing.T) TestInput {
 	keyDistr := sdk.NewKVStoreKey(distrtypes.StoreKey)
 	keyOracle := sdk.NewKVStoreKey(oracletypes.StoreKey)
 	keyMarket := sdk.NewKVStoreKey(markettypes.StoreKey)
-	keyTreasury := sdk.NewKVStoreKey(treasurytypes.StoreKey)
+	keyUpgrade := sdk.NewKVStoreKey(upgradetypes.StoreKey)
+	keyIBC := sdk.NewKVStoreKey(ibchost.StoreKey)
+	keyCapability := sdk.NewKVStoreKey(capabilitytypes.StoreKey)
+	keyCapabilityTransient := storetypes.NewMemoryStoreKey(capabilitytypes.MemStoreKey)
 
 	db := dbm.NewMemDB()
 	ms := store.NewCommitMultiStore(db)
@@ -180,7 +187,10 @@ func CreateTestInput(t *testing.T) TestInput {
 	ms.MountStoreWithDB(keyDistr, sdk.StoreTypeIAVL, db)
 	ms.MountStoreWithDB(keyOracle, sdk.StoreTypeIAVL, db)
 	ms.MountStoreWithDB(keyMarket, sdk.StoreTypeIAVL, db)
-	ms.MountStoreWithDB(keyTreasury, sdk.StoreTypeIAVL, db)
+	ms.MountStoreWithDB(keyUpgrade, sdk.StoreTypeIAVL, db)
+	ms.MountStoreWithDB(keyIBC, sdk.StoreTypeIAVL, db)
+	ms.MountStoreWithDB(keyCapability, sdk.StoreTypeIAVL, db)
+	ms.MountStoreWithDB(keyCapabilityTransient, sdk.StoreTypeMemory, db)
 
 	require.NoError(t, ms.LoadLatestVersion())
 
@@ -191,7 +201,6 @@ func CreateTestInput(t *testing.T) TestInput {
 		stakingtypes.BondedPoolName:    true,
 		distrtypes.ModuleName:          true,
 		markettypes.ModuleName:         true,
-		treasurytypes.ModuleName:       true,
 	}
 
 	maccPerms := map[string][]string{
@@ -202,8 +211,6 @@ func CreateTestInput(t *testing.T) TestInput {
 		distrtypes.ModuleName:          nil,
 		oracletypes.ModuleName:         nil,
 		markettypes.ModuleName:         {authtypes.Burner, authtypes.Minter},
-		treasurytypes.ModuleName:       {authtypes.Minter},
-		treasurytypes.BurnModuleName:   {authtypes.Burner},
 	}
 
 	paramsKeeper := paramskeeper.NewKeeper(appCodec, legacyAmino, keyParams, tkeyParams)
@@ -289,19 +296,24 @@ func CreateTestInput(t *testing.T) TestInput {
 	)
 	marketKeeper.SetParams(ctx, markettypes.DefaultParams())
 
-	treasuryKeeper := treasurykeeper.NewKeeper(
-		appCodec,
-		keyTreasury, paramsKeeper.Subspace(treasurytypes.ModuleName),
-		accountKeeper, bankKeeper,
-		marketKeeper, oracleKeeper,
-		stakingKeeper, distrKeeper,
-		distrtypes.ModuleName,
-	)
+	upgradeKeeper := upgradekeeper.NewKeeper(
+		make(map[int64]bool, 0), keyUpgrade, appCodec, tempDir, nil)
 
-	treasuryKeeper.SetParams(ctx, treasurytypes.DefaultParams())
+	capabilityKeeper := capabilitykeeper.NewKeeper(appCodec, keyCapability, keyCapabilityTransient)
+	scopedIBCKeeper := capabilityKeeper.ScopeToModule(ibchost.ModuleName)
+	scopedWasmKeeper := capabilityKeeper.ScopeToModule(types.ModuleName)
+
+	ibcKeeper := ibckeeper.NewKeeper(
+		appCodec,
+		keyIBC, paramsKeeper.Subspace(ibchost.ModuleName),
+		stakingKeeper,
+		upgradeKeeper,
+		scopedIBCKeeper,
+	)
 
 	router := baseapp.NewMsgServiceRouter()
 	querier := baseapp.NewGRPCQueryRouter()
+	authtypes.RegisterQueryServer(querier, accountKeeper)
 	banktypes.RegisterQueryServer(querier, bankKeeper)
 	stakingtypes.RegisterQueryServer(querier, stakingkeeper.Querier{Keeper: stakingKeeper})
 	distrtypes.RegisterQueryServer(querier, distrKeeper)
@@ -312,9 +324,10 @@ func CreateTestInput(t *testing.T) TestInput {
 		paramsKeeper.Subspace(types.ModuleName),
 		accountKeeper,
 		bankKeeper,
-		treasuryKeeper,
+		ibcKeeper.ChannelKeeper,
+		&ibcKeeper.PortKeeper,
+		scopedWasmKeeper,
 		router,
-		querier,
 		types.DefaultFeatures,
 		tempDir,
 		config.DefaultConfig(),
@@ -338,10 +351,10 @@ func CreateTestInput(t *testing.T) TestInput {
 		types.WasmQueryRouteBank:     bankwasm.NewWasmQuerier(bankKeeper),
 		types.WasmQueryRouteStaking:  stakingwasm.NewWasmQuerier(stakingKeeper, distrKeeper),
 		types.WasmQueryRouteMarket:   marketwasm.NewWasmQuerier(marketKeeper),
-		types.WasmQueryRouteTreasury: treasurywasm.NewWasmQuerier(treasuryKeeper),
+		types.WasmQueryRouteTreasury: treasurylegacy.NewWasmQuerier(),
 		types.WasmQueryRouteWasm:     NewWasmQuerier(keeper),
 		types.WasmQueryRouteOracle:   oraclewasm.NewWasmQuerier(oracleKeeper),
-	}, NewStargateWasmQuerier(keeper))
+	}, NewStargateWasmQuerier(querier), NewIBCQuerier(keeper, ibcKeeper.ChannelKeeper))
 	keeper.RegisterMsgParsers(map[string]types.WasmMsgParserInterface{
 		types.WasmMsgParserRouteBank:         bankwasm.NewWasmMsgParser(),
 		types.WasmMsgParserRouteStaking:      stakingwasm.NewWasmMsgParser(),
@@ -349,7 +362,7 @@ func CreateTestInput(t *testing.T) TestInput {
 		types.WasmMsgParserRouteDistribution: distrwasm.NewWasmMsgParser(),
 		types.WasmMsgParserRouteGov:          govwasm.NewWasmMsgParser(),
 		types.WasmMsgParserRouteWasm:         NewWasmMsgParser(),
-	}, NewStargateWasmMsgParser(legacyAmino))
+	}, NewStargateWasmMsgParser(encodingConfig.Marshaler), NewIBCMsgParser(wasmtesting.MockIBCTransferKeeper{}))
 
 	keeper.SetLastCodeID(ctx, 0)
 	keeper.SetLastInstanceID(ctx, 0)
@@ -357,13 +370,14 @@ func CreateTestInput(t *testing.T) TestInput {
 	return TestInput{
 		ctx.WithGasMeter(sdk.NewGasMeter(keeper.MaxContractGas(ctx))),
 		legacyAmino,
+		encodingConfig.InterfaceRegistry,
 		accountKeeper,
 		bankKeeper,
 		stakingKeeper,
 		distrKeeper,
 		oracleKeeper,
 		marketKeeper,
-		treasuryKeeper,
+		*ibcKeeper,
 		keeper}
 }
 
@@ -378,6 +392,7 @@ func FundAccount(input TestInput, addr sdk.AccAddress, amounts sdk.Coins) error 
 	return input.BankKeeper.SendCoinsFromModuleToAccount(input.Ctx, faucetAccountName, addr, amounts)
 }
 
+// nolint:deadcode,unused
 func createFakeFundedAccount(ctx sdk.Context, ak authkeeper.AccountKeeper, bk bankkeeper.Keeper, coins sdk.Coins) sdk.AccAddress {
 	_, _, addr := keyPubAddr()
 	ak.SetAccount(ctx, authtypes.NewBaseAccountWithAddress(addr))
@@ -392,6 +407,7 @@ func createFakeFundedAccount(ctx sdk.Context, ak authkeeper.AccountKeeper, bk ba
 	return addr
 }
 
+// nolint:unused
 func keyPubAddr() (crypto.PrivKey, crypto.PubKey, sdk.AccAddress) {
 	key := ed25519.GenPrivKey()
 	pub := key.PubKey()
@@ -403,4 +419,9 @@ func keyPubAddr() (crypto.PrivKey, crypto.PubKey, sdk.AccAddress) {
 type HackatomExampleInitMsg struct {
 	Verifier    sdk.AccAddress `json:"verifier"`
 	Beneficiary sdk.AccAddress `json:"beneficiary"`
+}
+
+// IBCReflectInitMsg nolint
+type IBCReflectInitMsg struct {
+	ReflectCodeID uint64 `json:"reflect_code_id"`
 }

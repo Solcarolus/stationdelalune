@@ -6,11 +6,13 @@ import (
 	"github.com/stretchr/testify/require"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 
 	core "github.com/terra-money/core/types"
 	"github.com/terra-money/core/x/market/keeper"
 	"github.com/terra-money/core/x/market/types"
+	oracletypes "github.com/terra-money/core/x/oracle/types"
 )
 
 func TestMarketFilters(t *testing.T) {
@@ -87,4 +89,43 @@ func TestSwapSendMsg(t *testing.T) {
 
 	balance := input.BankKeeper.GetBalance(input.Ctx, keeper.Addrs[1], core.MicroSDRDenom)
 	require.Equal(t, expectedAmt, balance.Amount)
+}
+
+func TestSpreadDistribution(t *testing.T) {
+	input, h := setup(t)
+
+	amt := sdk.NewInt(10)
+	offerCoin := sdk.NewCoin(core.MicroLunaDenom, amt)
+	swapDecCoin, spread, err := input.MarketKeeper.ComputeSwap(input.Ctx, offerCoin, core.MicroSDRDenom)
+	require.NoError(t, err)
+
+	feeDecCoin := sdk.NewDecCoinFromDec(swapDecCoin.Denom, spread.Mul(swapDecCoin.Amount))
+	swapDecCoin.Amount = swapDecCoin.Amount.Sub(feeDecCoin.Amount)
+
+	_, decimalCoin := swapDecCoin.TruncateDecimal()
+	feeDecCoin = feeDecCoin.Add(decimalCoin) // add truncated decimalCoin to swapFee
+	feeCoin, _ := feeDecCoin.TruncateDecimal()
+
+	swapMsg := types.NewMsgSwap(keeper.Addrs[0], offerCoin, core.MicroSDRDenom)
+	_, err = h(input.Ctx, swapMsg)
+	require.NoError(t, err)
+
+	blockValidationReward := feeCoin.Amount.QuoRaw(2)
+	oracleVotingReward := feeCoin.Amount.Sub(blockValidationReward)
+
+	balanceReq := banktypes.QueryBalanceRequest{
+		Address: authtypes.NewModuleAddress(authtypes.FeeCollectorName).String(),
+		Denom:   core.MicroSDRDenom,
+	}
+	balanceRes, err := input.BankKeeper.Balance(sdk.WrapSDKContext(input.Ctx), &balanceReq)
+	require.NoError(t, err)
+	require.Equal(t, balanceRes.Balance.Amount, blockValidationReward)
+
+	balanceReq = banktypes.QueryBalanceRequest{
+		Address: authtypes.NewModuleAddress(oracletypes.ModuleName).String(),
+		Denom:   core.MicroSDRDenom,
+	}
+	balanceRes, err = input.BankKeeper.Balance(sdk.WrapSDKContext(input.Ctx), &balanceReq)
+	require.NoError(t, err)
+	require.Equal(t, balanceRes.Balance.Amount, oracleVotingReward)
 }

@@ -5,6 +5,8 @@ import (
 	"github.com/cosmos/cosmos-sdk/types/address"
 )
 
+type key int
+
 const (
 	// ModuleName is the name of the wasm module
 	ModuleName = "wasm"
@@ -22,7 +24,7 @@ const (
 	RouterKey = ModuleName
 
 	// WasmVMQueryDepthContextKey context key to keep query depth
-	WasmVMQueryDepthContextKey = "wasmvm-query-depth"
+	WasmVMQueryDepthContextKey key = iota
 )
 
 // Keys for wasm store
@@ -43,6 +45,7 @@ var (
 	CodeKey           = []byte{0x03}
 	ContractInfoKey   = []byte{0x04}
 	ContractStoreKey  = []byte{0x05}
+	TXCounterKey      = []byte{0x06}
 )
 
 // GetCodeInfoKey constructs the key of the WASM code info for the ID
